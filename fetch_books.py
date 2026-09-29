@@ -1,5 +1,5 @@
 """
-دریافت اطلاعات ۵۰ کتاب از API عمومی Open Library،
+دریافت اطلاعات ۵۰ کتاب تصادفی و متنوع از API عمومی Open Library،
 فیلتر کتاب‌هایی که سال انتشارشان بعد از ۲۰۰۰ است،
 و ذخیره در فایل CSV.
 
@@ -8,35 +8,55 @@
 """
 
 import csv
+import random
 import sys
 
 import requests
 
 # ---------- تنظیمات ----------
-SEARCH_QUERY = "python"      # موضوع/عبارت جستجو (هر چیزی می‌تونی بذاری)
-BOOK_LIMIT = 50              # تعداد کتاب برای دریافت
+BOOK_LIMIT = 50              # تعداد کل کتاب برای دریافت
+BOOKS_PER_SUBJECT = 5        # از هر موضوع چند کتاب بگیریم
+MAX_RANDOM_OFFSET = 100      # شروع تصادفی از بین N کتاب اول هر موضوع
 YEAR_THRESHOLD = 2000        # فقط کتاب‌های بعد از این سال نگه داشته می‌شن
 OUTPUT_FILE = "books.csv"
 API_URL = "https://openlibrary.org/search.json"
 FIELDS = "key,title,author_name,first_publish_year,publisher,language,number_of_pages_median"
+
+# هر بار اجرا، موضوع‌ها به‌صورت تصادفی از این لیست انتخاب می‌شن
+# (می‌ توان موضوع‌های دلخواه هم اضافه کرد یا موضاعات فعلی را حذف نمود))
+SUBJECTS = [
+    "history", "science fiction", "fantasy", "cooking", "philosophy",
+    "psychology", "biology", "physics", "mathematics", "art",
+    "music", "travel", "business", "economics", "poetry",
+    "mystery", "romance", "horror", "biography", "politics",
+    "religion", "sports", "computers", "medicine", "architecture",
+    "photography", "gardening", "education", "sociology", "astronomy",
+]
 # ------------------------------
 
 
-def fetch_books(query: str, limit: int) -> list[dict]:
-    """کتاب‌ها را از Open Library می‌گیرد."""
-    params = {"q": query, "limit": limit, "fields": FIELDS}
+def fetch_books(subject: str, limit: int, offset: int) -> list[dict]:
+    """کتاب‌های یک موضوع را از Open Library می‌گیرد."""
+    params = {
+        "q": f'subject:"{subject}"',
+        "limit": limit,
+        "offset": offset,
+        "fields": FIELDS,
+    }
     try:
         response = requests.get(API_URL, params=params, timeout=15)
         response.raise_for_status()
     except requests.RequestException as e:
-        sys.exit(f"خطا در ارتباط با API: {e}")
+        print(f"  خطا برای موضوع «{subject}»: {e} (رد می‌شویم)")
+        return []
     return response.json().get("docs", [])
 
 
-def clean_book(doc: dict) -> dict:
+def clean_book(doc: dict, subject: str) -> dict:
     """فقط فیلدهای لازم را برمی‌دارد و به شکل مرتب درمی‌آورد."""
     return {
         "title": doc.get("title", ""),
+        "subject": subject,
         "authors": ", ".join(doc.get("author_name", [])[:3]),
         "first_publish_year": doc.get("first_publish_year"),
         "publisher": (doc.get("publisher") or [""])[0],
@@ -46,11 +66,39 @@ def clean_book(doc: dict) -> dict:
     }
 
 
+def collect_random_books() -> list[dict]:
+    """از موضوع‌های تصادفی کتاب جمع می‌کند تا به BOOK_LIMIT برسد."""
+    subjects = SUBJECTS.copy()
+    random.shuffle(subjects)  # ترتیب موضوع‌ها را بُر می‌زند
+
+    books = []
+    seen_keys = set()  # برای جلوگیری از کتاب تکراری
+
+    for subject in subjects:
+        if len(books) >= BOOK_LIMIT:
+            break
+
+        offset = random.randint(0, MAX_RANDOM_OFFSET)
+        print(f"موضوع: {subject} (شروع از {offset})")
+        docs = fetch_books(subject, BOOKS_PER_SUBJECT, offset)
+
+        for doc in docs:
+            key = doc.get("key")
+            if key in seen_keys or len(books) >= BOOK_LIMIT:
+                continue
+            seen_keys.add(key)
+            books.append(clean_book(doc, subject))
+
+    random.shuffle(books)  # ترتیب کتاب‌ها هم تصادفی بشه
+    return books
+
+
 def main() -> None:
-    print(f"در حال دریافت {BOOK_LIMIT} کتاب برای «{SEARCH_QUERY}» ...")
-    docs = fetch_books(SEARCH_QUERY, BOOK_LIMIT)
-    books = [clean_book(d) for d in docs]
-    print(f"{len(books)} کتاب دریافت شد.")
+    books = collect_random_books()
+    print(f"\n{len(books)} کتاب دریافت شد.")
+
+    if not books:
+        sys.exit("هیچ کتابی دریافت نشد. اتصال اینترنت را بررسی کن.")
 
     # فیلتر: فقط سال انتشار بعد از ۲۰۰۰ (کتاب‌های بدون سال حذف می‌شن)
     filtered = [
